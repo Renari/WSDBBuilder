@@ -174,7 +174,7 @@ namespace WSDBBuilder
                                         set[2] = Console.ReadLine();
                                         break;
                                 }
-                                if (db == true)
+                                if (db)
                                 {
                                     log("Inserting set " + set[1] + "into database with id " + set[0] + " and type " + set[2]);
 
