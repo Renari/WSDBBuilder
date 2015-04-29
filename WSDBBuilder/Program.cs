@@ -2,12 +2,14 @@
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Linq;
 using System.Text;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
-using Fizzler.Systems.HtmlAgilityPack;
-using HtmlAgilityPack;
+using AngleSharp.Dom;
+using AngleSharp.Dom.Html;
+using AngleSharp.Parser.Html;
 using MySql.Data.MySqlClient;
 
 namespace WSDBBuilder
@@ -32,12 +34,11 @@ namespace WSDBBuilder
             string result = "";
             if (!requestPage("http://ws-tcg.com/cardlist", ref result))
                 return false;
-            HtmlDocument page = new HtmlDocument();
-            page.LoadHtml2(result);
-            IEnumerable<HtmlNode> matches = page.DocumentNode.QuerySelectorAll("a[onclick^=showExpansionDetail]");
-            foreach (HtmlNode node in matches)
+            IHtmlDocument page = new HtmlParser(result).Parse();
+            IEnumerable<IElement> matches = page.DocumentElement.QuerySelectorAll("a[onclick^=showExpansionDetail]");
+            foreach (IElement node in matches)
             {
-                HtmlAttribute att = node.Attributes["onclick"];
+                IAttr att = node.Attributes.First(attr => attr.Name == "onclick");
                 Match match = Regex.Match(att.Value, "showExpansionDetail\\('(\\d(?:(?:\\d)?)+)'");
                 ids.Add(Convert.ToInt16(match.Groups[1].Value));
             }
@@ -57,11 +58,10 @@ namespace WSDBBuilder
                 log("Getting set " + ids[index]);
                 if (postRequest(pairs, "/jsp/cardlist/expansionHeader", ref result))
                 {
-                    HtmlDocument page = new HtmlDocument();
-                    page.LoadHtml2(result);
-                    HtmlNode match = page.DocumentNode.QuerySelector("h3");
+                    IHtmlDocument page = new HtmlParser(result).Parse();
+                    IElement match = page.DocumentElement.QuerySelector("h3");
                     string[] seperator = new string[] { " - " };
-                    string[] split = match.InnerText.Split(seperator, StringSplitOptions.None);
+                    string[] split = match.TextContent.Split(seperator, StringSplitOptions.None);
                     sets.Add(new string[] { ids[index].ToString(), split[1], split[0] });
                     index++;
                 }
@@ -221,22 +221,21 @@ namespace WSDBBuilder
                     if (postRequest(pairs, "/jsp/cardlist/expansionDetail", ref result))
                     {
 
-                        HtmlDocument page = new HtmlDocument();
-                        page.LoadHtml2(result);
+                        IHtmlDocument page = new HtmlParser(result).Parse();
                         //get the string that has the total number of cards
-                        string noCardsText = page.DocumentNode.QuerySelector("p.pageLink").InnerText.Split(new string[] {Environment.NewLine}, StringSplitOptions.None)[1];
+                        string noCardsText = page.DocumentElement.QuerySelector("p.pageLink").FirstChild.TextContent.Trim();
                         Match nocards = Regex.Match(noCardsText, "\\[(?:\\d)+ - (?:\\d)+ \\/ (\\d+)\\]");
                         //calculate the number of pages
                         int nopages = (int)Math.Ceiling((Convert.ToDouble(nocards.Groups[1].Value) / 10));
                         log("Set " + setIds[index] + " has " + nopages + " pages");
                         //get all cards on this page
-                        IEnumerable<HtmlNode> matches = page.DocumentNode.QuerySelectorAll("tr td:first-child");
+                        IEnumerable<IElement> matches = page.DocumentElement.QuerySelectorAll("tr td:first-child");
                         //store all the ids in a list
                         List<string> cardSetIds = new List<string>();
-                        foreach (HtmlNode m in matches)
-                            cardSetIds.Add(m.InnerText);
+                        foreach (IElement m in matches)
+                            cardSetIds.Add(m.TextContent);
 
-                        for (int i = 2; i <= nopages; i++)
+                        /*for (int i = 2; i <= nopages; i++)
                         {
                             pairs = new List<KeyValuePair<string, string>>();
                             pairs.Add(new KeyValuePair<string, string>("expansion_id", setIds[index].ToString()));
@@ -244,33 +243,25 @@ namespace WSDBBuilder
                             if (postRequest(pairs, "/jsp/cardlist/expansionDetail", ref result))
                             {
                                 page.LoadHtml2(result);
-                                matches = page.DocumentNode.QuerySelectorAll("tr td:first-child");
-                                foreach (HtmlNode m in matches)
-                                    cardSetIds.Add(m.InnerText);
+                                matches = page.DocumentElement.QuerySelectorAll("tr td:first-child");
+                                foreach (IElement m in matches)
+                                    cardSetIds.Add(m.TextContent);
                             }
                             else
                                 if (prompt("Retry?"))
                                     i--;
-                        }
-                        /*foreach (string id in cardSetIds)
-                        {
-                            try
-                            {
-                                requestPage("http://ws-tcg.com/cardlist/?cardno=" + "FS/S34-032", ref result);
-                                //Match match = Regex.Match(result, "<th(?:.+?)?>カード名<\\/th>(?:\\r)?\\n(?:(?: )+)?<td(?:.+?)?>(?:\\r)?\\n(.+?)<br(?: )?(?:\\/)?>(?:\\r)?\\n<(?:.+?)>(.+?)<\\/(?:.+)>");
-                                Match match = Regex.Match(result, "<table class=\"status\">.*?<img src=\"(?<image>[^\"']*)\"(?:[^>]+>){8}(?:\r)?\n(?<name>[^<]+)(?:[^>]+>){2}(?<kana>[^<]+)(?:[^>]+>){7}(?<number>[^<]+)(?:[^>]+>){2}(?:[^<]+)(?:[^>]+>){2}(?<rarity>[^<]+)(?:[^>]+>){6}(?<expansion>[^<]+)(?:[^>]+>){4}[^<]+<img src=[\"'][^'\"]+(?<side\\w)\\.gif(?:[^>]+>){7}(?<type>[^<]+)(?:[^>]+>){4}<img src=[\"'][^'\"]+\\/(?<color>\\w)(?:[^>]+>){7}(?<level>[^<]+)(?:[^>]+>){4}(?<cost>[^<]+)(?:[^>]+>){6}(?<power>[^<]+)(?:[^>]+>){4}(?<soul>.+?)(?:<\\/td>)(?:[^>]+>){5}(?<trigger>.+?)(?:<\\/td>)(?:[^>]+>){3}(?:\r)?(?:\n)(?<traits>[^>]+)(?:\r)?(?:\n)<(?:[^>]+>){6}(?<text>.+?)<\\/td>(?:[^>]+>){5}(?<flavor>.+?)<\\/td>", RegexOptions.Singleline);
-                                foreach (string item in match.Groups)
-                                {
-                                    log(item);
-                                }
-                                //match = Regex.Match(result, )
-                            }
-                            catch (ArgumentException e)
-                            {
-                                log(e.ToString());
-                            }
-                            break;
                         }*/
+                        foreach (string id in cardSetIds)
+                        {
+                            requestPage("http://ws-tcg.com/cardlist/?cardno=" + "FS/S34-032", ref result);
+                            page = new HtmlParser(result).Parse();
+                            string image = page.DocumentElement.QuerySelector(".status td img").Attributes.First(attr => attr.Name == "src").Value;
+                            matches = page.DocumentElement.QuerySelectorAll(".status td");
+                            List<IElement> tableNodes = matches.ToList<IElement>();
+                            string name = tableNodes[1].FirstChild.TextContent;
+                            string kana = tableNodes[1].ChildNodes.First(node => node.NodeName == "SPAN").TextContent.Trim();
+                            break;
+                        }
                         index++;
                     }
                     else
