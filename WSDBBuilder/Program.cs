@@ -90,11 +90,11 @@ namespace WSDBBuilder
             return false;
         }
 
-        static bool postRequest(List<KeyValuePair<string, string>> pairs, string location, ref string result)
+        static bool postRequest(List<KeyValuePair<string, string>> pairs, string location, ref string result, bool en = false)
         {
             using (var client = new HttpClient())
             {
-                client.BaseAddress = new Uri("http://ws-tcg.com");
+                client.BaseAddress = en ? new Uri ("http://ws-tcg.com/en") : new Uri("http://ws-tcg.com");
                 var encpair = new FormUrlEncodedContent(pairs);
                 try
                 {
@@ -179,6 +179,167 @@ namespace WSDBBuilder
             }
         }
 
+        static void importLibrary(List<short> setIds, MySqlConnection conn, bool en = false)
+        {
+
+            int index = 0;
+            while (index < setIds.Count)
+            {
+                var pairs = new List<KeyValuePair<string, string>>();
+                pairs.Add(new KeyValuePair<string, string>("expansion_id", setIds[index].ToString()));
+                string result = "";
+                log("Processing set " + setIds[index]);
+                //this is a mess and rather redudant
+                if (postRequest(pairs, "/jsp/cardlist/expansionDetail", ref result))
+                {
+                    Serializer serializer = new Serializer();
+                    IHtmlDocument page = new HtmlParser(result).Parse();
+                    //get the string that has the total number of cards
+                    string noCardsText = page.DocumentElement.QuerySelector("p.pageLink").FirstChild.TextContent.Trim();
+                    Match nocards = Regex.Match(noCardsText, "\\[(?:\\d)+ - (?:\\d)+ \\/ (\\d+)\\]");
+                    //calculate the number of pages
+                    int nopages = (int)Math.Ceiling((Convert.ToDouble(nocards.Groups[1].Value) / 10));
+                    log("Set " + setIds[index] + " has " + nopages + " pages");
+                    //get all cards on this page
+                    IEnumerable<IElement> matches = page.DocumentElement.QuerySelectorAll("tr td:first-child");
+                    //store all the ids in a list
+                    List<string> cardSetIds = new List<string>();
+                    foreach (IElement m in matches)
+                        if (!String.IsNullOrWhiteSpace(m.TextContent))
+                            cardSetIds.Add(m.TextContent.Trim());
+
+                    for (int i = 2; i <= nopages; i++)
+                    {
+                        pairs = new List<KeyValuePair<string, string>>();
+                        pairs.Add(new KeyValuePair<string, string>("expansion_id", setIds[index].ToString()));
+                        pairs.Add(new KeyValuePair<string, string>("page", i.ToString()));
+                        if (postRequest(pairs, "/jsp/cardlist/expansionDetail", ref result))
+                        {
+                            page = new HtmlParser(result).Parse();
+                            matches = page.DocumentElement.QuerySelectorAll("tr td:first-child");
+                            foreach (IElement m in matches)
+                                if (!String.IsNullOrWhiteSpace(m.TextContent))
+                                    cardSetIds.Add(m.TextContent.Trim());
+                        }
+                        else
+                            if (prompt("Retry?"))
+                                i--;
+                    }
+                    foreach (string id in cardSetIds)
+                    {
+                        requestPage("http://ws-tcg.com/cardlist/?cardno=" + id, ref result);
+                        page = new HtmlParser(result).Parse();
+                        string image = page.DocumentElement.QuerySelector(".status td img").Attributes.First(attr => attr.Name == "src").Value;
+                        matches = page.DocumentElement.QuerySelectorAll(".status td");
+                        MatchCollection rmatches;
+                        List<IElement> tableNodes = matches.ToList<IElement>();
+                        Dictionary<string, string> card = new Dictionary<string, string>();
+                        card.Add("name", tableNodes[1].FirstChild.TextContent.Trim());
+                        card.Add("kana", tableNodes[1].ChildNodes.First(node => node.NodeName == "SPAN").TextContent.Trim());
+                        //tableNodes[2] == id
+                        card.Add("rarity", tableNodes[3].TextContent.Trim());
+                        card.Add("set", setIds[index].ToString()); //tableNodes[4] holds the expansion but it's best to store the id instead
+                        card.Add("side", Regex.Match(tableNodes[5].InnerHtml.Trim(), "src=['\"](?:.+\\/)+(\\w)").Groups[1].Value.ToUpper());
+                        switch (tableNodes[6].TextContent.Trim())
+                        {
+                            case "クライマックス":
+                                card.Add("type", "CX");
+                                break;
+                            case "イベント":
+                                card.Add("type", "EV");
+                                break;
+                            case "キャラ":
+                                card.Add("type", "CH");
+                                break;
+                            default:
+                                log("Unknown card type: " + tableNodes[6].TextContent.Trim() + " please enter a value");
+                                card.Add("type", Console.ReadLine().Trim());
+                                break;
+                        }
+                        card.Add("color", Regex.Match(tableNodes[7].InnerHtml.Trim(), "src=['\"](?:.+\\/)+(\\w)").Groups[1].Value.ToUpper());
+                        card.Add("level", Regex.IsMatch(tableNodes[8].TextContent.Trim(), "[-－]") ? null : tableNodes[8].TextContent.Trim());
+                        card.Add("cost", Regex.IsMatch(tableNodes[9].TextContent.Trim(), "[-－]") ? null : tableNodes[9].TextContent.Trim());
+                        card.Add("power", Regex.IsMatch(tableNodes[10].TextContent.Trim(), "[-－]") ? null : tableNodes[10].TextContent.Trim());
+                        card.Add("soul", Regex.Matches(tableNodes[11].InnerHtml.Trim(), "src=['\"](?:.+?\\/)+?(\\w+)?\\.").Count.ToString());
+                        ArrayList triggers = new ArrayList();
+                        rmatches = Regex.Matches(tableNodes[12].InnerHtml, "src=['\"](?:.+?\\/)+?(\\w+)?\\.");
+                        foreach (Match m in rmatches)
+                            triggers.Add(m.Groups[1].Value);
+                        card.Add("triggers", triggers.Count == 0 ? null : serializer.Serialize(triggers));
+                        ArrayList traits = new ArrayList();
+                        if (tableNodes[13].TextContent.Trim().Contains('・'))
+                        {
+                            string[] s = tableNodes[13].TextContent.Split('・');
+                            foreach (string item in s)
+                            {
+                                if (!Regex.IsMatch(item.Trim(), "[-－]"))
+                                    traits.Add(item.Trim());
+                            }
+                        }
+                        card.Add("traits", traits.Count == 0 ? null : serializer.Serialize(traits));
+
+                        if (!Regex.IsMatch(tableNodes[14].TextContent.Trim(), "(?:（バニラ）|[-－])"))
+                            card.Add("text", Regex.Replace(tableNodes[14].InnerHtml.Trim(), "<br\\s*(?:\\/)*>$", "", RegexOptions.None));
+                        else
+                            card.Add("text", null);
+
+                        if (!Regex.IsMatch(tableNodes[14].TextContent.Trim(), "[-－]"))
+                            card.Add("flavor", Regex.Replace(tableNodes[15].InnerHtml.Trim(), "<br\\s*(?:\\/)*>$", "", RegexOptions.None));
+                        else
+                            card.Add("flavor", null);
+
+                        log("Adding " + id + " to the database.");
+                        try
+                        {
+                            MySqlCommand cmd = new MySqlCommand();
+                            cmd.Connection = conn;
+
+                            cmd.CommandText = "INSERT INTO " +
+                                "ws_cards(cardno,name,kana,rarity,expansion,side,color,level,cost,power,soul,triggers,traits,text,flavor) " +
+                                "VALUES(@cardno,@name,@kana,@rarity,@expansion,@side,@color,@level,@cost,@power,@soul,@triggers,@traits,@text,@flavor)";
+                            cmd.Prepare();
+
+                            cmd.Parameters.AddWithValue("@cardno", id);
+                            cmd.Parameters.AddWithValue("@name", card["name"]);
+                            cmd.Parameters.AddWithValue("@kana", card["kana"]);
+                            cmd.Parameters.AddWithValue("@rarity", card["rarity"]);
+                            cmd.Parameters.AddWithValue("@expansion", setIds[index]);
+                            cmd.Parameters.AddWithValue("@side", card["side"]);
+                            cmd.Parameters.AddWithValue("@color", card["color"]);
+                            cmd.Parameters.AddWithValue("@level", card["level"]);
+                            cmd.Parameters.AddWithValue("@cost", card["cost"]);
+                            cmd.Parameters.AddWithValue("@power", card["power"]);
+                            cmd.Parameters.AddWithValue("@soul", card["soul"]);
+                            cmd.Parameters.AddWithValue("@triggers", card["triggers"]);
+                            cmd.Parameters.AddWithValue("@traits", card["traits"]);
+                            cmd.Parameters.AddWithValue("@text", card["text"]);
+                            cmd.Parameters.AddWithValue("@flavor", card["flavor"]);
+
+                            cmd.ExecuteNonQuery();
+                        }
+                        catch(MySqlException e)
+                        {
+                            log(e.ToString());
+                            if (prompt("Exit?"))
+                                exit(2, conn);
+                        }
+                    }
+                    index++;
+                }
+                else
+                    if (!prompt("Retry?"))
+                        index++;
+
+            }
+        }
+
+        static void exit(int code, MySqlConnection conn = null)
+        {
+            if (conn != null)
+                conn.Close();
+            Environment.Exit(code);
+        }
+
 
         static void Main(string[] args)
         {
@@ -209,153 +370,13 @@ namespace WSDBBuilder
                     processSets(setIds, sets, conn);
 
                 }
-
-                int index = 0;
-                while (index < setIds.Count)
+                if (prompt("Import JP library?"))
                 {
-                    var pairs = new List<KeyValuePair<string, string>>();
-                    pairs.Add(new KeyValuePair<string, string>("expansion_id", setIds[index].ToString()));
-                    string result = "";
-                    log("Processing set " + setIds[index]);
-                    //this is a mess and rather redudant
-                    if (postRequest(pairs, "/jsp/cardlist/expansionDetail", ref result))
-                    {
-                        Serializer serializer = new Serializer();
-                        IHtmlDocument page = new HtmlParser(result).Parse();
-                        //get the string that has the total number of cards
-                        string noCardsText = page.DocumentElement.QuerySelector("p.pageLink").FirstChild.TextContent.Trim();
-                        Match nocards = Regex.Match(noCardsText, "\\[(?:\\d)+ - (?:\\d)+ \\/ (\\d+)\\]");
-                        //calculate the number of pages
-                        int nopages = (int)Math.Ceiling((Convert.ToDouble(nocards.Groups[1].Value) / 10));
-                        log("Set " + setIds[index] + " has " + nopages + " pages");
-                        //get all cards on this page
-                        IEnumerable<IElement> matches = page.DocumentElement.QuerySelectorAll("tr td:first-child");
-                        //store all the ids in a list
-                        List<string> cardSetIds = new List<string>();
-                        foreach (IElement m in matches)
-                            if (!String.IsNullOrWhiteSpace(m.TextContent))
-                                cardSetIds.Add(m.TextContent.Trim());
-
-                        for (int i = 2; i <= nopages; i++)
-                        {
-                            pairs = new List<KeyValuePair<string, string>>();
-                            pairs.Add(new KeyValuePair<string, string>("expansion_id", setIds[index].ToString()));
-                            pairs.Add(new KeyValuePair<string, string>("page", i.ToString()));
-                            if (postRequest(pairs, "/jsp/cardlist/expansionDetail", ref result))
-                            {
-                                page = new HtmlParser(result).Parse();
-                                matches = page.DocumentElement.QuerySelectorAll("tr td:first-child");
-                                foreach (IElement m in matches)
-                                    if (!String.IsNullOrWhiteSpace(m.TextContent))
-                                        cardSetIds.Add(m.TextContent.Trim());
-                            }
-                            else
-                                if (prompt("Retry?"))
-                                    i--;
-                        }
-                        foreach (string id in cardSetIds)
-                        {
-                            requestPage("http://ws-tcg.com/cardlist/?cardno=" + id, ref result);
-                            page = new HtmlParser(result).Parse();
-                            string image = page.DocumentElement.QuerySelector(".status td img").Attributes.First(attr => attr.Name == "src").Value;
-                            matches = page.DocumentElement.QuerySelectorAll(".status td");
-                            MatchCollection rmatches;
-                            List<IElement> tableNodes = matches.ToList<IElement>();
-                            Dictionary<string, string> card = new Dictionary<string, string>();
-                            card.Add("name", tableNodes[1].FirstChild.TextContent.Trim());
-                            card.Add("kana", tableNodes[1].ChildNodes.First(node => node.NodeName == "SPAN").TextContent.Trim());
-                            //tableNodes[2] == id
-                            card.Add("rarity", tableNodes[3].TextContent.Trim());
-                            card.Add("set", setIds[index].ToString()); //tableNodes[4] holds the expansion but it's best to store the id instead
-                            card.Add("side", Regex.Match(tableNodes[5].InnerHtml.Trim(), "src=['\"](?:.+\\/)+(\\w)").Groups[1].Value.ToUpper());
-                            switch (tableNodes[6].TextContent.Trim())
-                            {
-                                case "クライマックス":
-                                    card.Add("type", "CX");
-                                    break;
-                                case "イベント":
-                                    card.Add("type", "EV");
-                                    break;
-                                case "キャラ":
-                                    card.Add("type", "CH");
-                                    break;
-                                default:
-                                    log("Unknown card type: " + tableNodes[6].TextContent.Trim() + " please enter a value");
-                                    card.Add("type", Console.ReadLine().Trim());
-                                    break;
-                            }
-                            card.Add("color", Regex.Match(tableNodes[7].InnerHtml.Trim(), "src=['\"](?:.+\\/)+(\\w)").Groups[1].Value.ToUpper());
-                            card.Add("level", Regex.IsMatch(tableNodes[8].TextContent.Trim(), "[-－]") ? null : tableNodes[8].TextContent.Trim());
-                            card.Add("cost", Regex.IsMatch(tableNodes[9].TextContent.Trim(), "[-－]") ? null : tableNodes[9].TextContent.Trim());
-                            card.Add("power", Regex.IsMatch(tableNodes[10].TextContent.Trim(), "[-－]") ? null : tableNodes[10].TextContent.Trim());
-                            card.Add("soul", Regex.Matches(tableNodes[11].InnerHtml.Trim(), "src=['\"](?:.+?\\/)+?(\\w+)?\\.").Count.ToString());
-                            ArrayList triggers = new ArrayList();
-                            rmatches = Regex.Matches(tableNodes[12].InnerHtml, "src=['\"](?:.+?\\/)+?(\\w+)?\\.");
-                            foreach (Match m in rmatches)
-                                triggers.Add(m.Groups[1].Value);
-                            card.Add("triggers", triggers.Count == 0 ? null : serializer.Serialize(triggers));
-                            ArrayList traits = new ArrayList();
-                            if (tableNodes[13].TextContent.Trim().Contains('・'))
-                            {
-                                string[] s = tableNodes[13].TextContent.Split('・');
-                                foreach (string item in s)
-                                {
-                                    if (!Regex.IsMatch(item.Trim(), "[-－]"))
-                                        traits.Add(item.Trim());
-                                }
-                            }
-                            card.Add("traits", traits.Count == 0 ? null : serializer.Serialize(traits));
-
-                            if (!Regex.IsMatch(tableNodes[14].TextContent.Trim(), "(?:（バニラ）|[-－])"))
-                                card.Add("text", Regex.Replace(tableNodes[14].InnerHtml.Trim(), "<br\\s*(?:\\/)*>$", "", RegexOptions.None));
-                            else
-                                card.Add("text", null);
-
-                            if (!Regex.IsMatch(tableNodes[14].TextContent.Trim(), "[-－]"))
-                                card.Add("flavor", Regex.Replace(tableNodes[15].InnerHtml.Trim(), "<br\\s*(?:\\/)*>$", "", RegexOptions.None));
-                            else
-                                card.Add("flavor", null);
-
-                            log("Adding " + id + " to the database.");
-                            MySqlCommand cmd = new MySqlCommand();
-                            cmd.Connection = conn;
-
-                            cmd.CommandText = "INSERT INTO " +
-                                "ws_cards(cardno,name,kana,rarity,expansion,side,color,level,cost,power,soul,triggers,traits,text,flavor) " +
-                                "VALUES(@cardno,@name,@kana,@rarity,@expansion,@side,@color,@level,@cost,@power,@soul,@triggers,@traits,@text,@flavor)";
-                            cmd.Prepare();
-
-                            cmd.Parameters.AddWithValue("@cardno", id);
-                            cmd.Parameters.AddWithValue("@name", card["name"]);
-                            cmd.Parameters.AddWithValue("@kana", card["kana"]);
-                            cmd.Parameters.AddWithValue("@rarity", card["rarity"]);
-                            cmd.Parameters.AddWithValue("@expansion", setIds[index]);
-                            cmd.Parameters.AddWithValue("@side", card["side"]);
-                            cmd.Parameters.AddWithValue("@color", card["color"]);
-                            cmd.Parameters.AddWithValue("@level", card["level"]);
-                            cmd.Parameters.AddWithValue("@cost", card["cost"]);
-                            cmd.Parameters.AddWithValue("@power", card["power"]);
-                            cmd.Parameters.AddWithValue("@soul", card["soul"]);
-                            cmd.Parameters.AddWithValue("@triggers", card["triggers"]);
-                            cmd.Parameters.AddWithValue("@traits", card["traits"]);
-                            cmd.Parameters.AddWithValue("@text", card["text"]);
-                            cmd.Parameters.AddWithValue("@flavor", card["flavor"]);
-
-                            cmd.ExecuteNonQuery();
-                        }
-                        index++;
-                    }
-                    else
-                        if (!prompt("Retry?"))
-                            index++;
-
+                    importLibrary(setIds, conn);
                 }
             }
             //close mysql connection
-            if (conn != null)
-            {
-                conn.Close();
-            }
+            conn.Close();
             pause();
         }
     }
