@@ -133,46 +133,43 @@ namespace WSDBBuilder
         {
             try
             {
-                if (conn != null)
+                foreach (string[] set in sets)
                 {
-                    foreach (string[] set in sets)
+                    switch (set[2])
                     {
-                        switch (set[2])
-                        {
-                            case "ブースターパック":
-                                set[2] = "BP";
-                                break;
-                            case "エクストラパック":
-                                set[2] = "EP";
-                                break;
-                            case "トライアルデッキ":
-                                set[2] = "TD";
-                                break;
-                            case "PRカード":
-                                set[2] = "PR";
-                                break;
-                            case "エクストラパック／エクストラブースター/他":
-                                set[2] = "OT";
-                                break;
-                            default:
-                                log("Unknown set identifier: " + set[2] + " please enter value");
-                                set[2] = Console.ReadLine().Trim();
-                                break;
-                        }
-                            log("Inserting set " + set[1] + "into database with id " + set[0] + " and type " + set[2]);
-
-                            MySqlCommand cmd = new MySqlCommand();
-                            cmd.Connection = conn;
-
-                            cmd.CommandText = "INSERT INTO ws_sets(id,jp_name,type) VALUES(@id,@jp_name,@type)";
-                            cmd.Prepare();
-
-                            cmd.Parameters.AddWithValue("@id", set[0]);
-                            cmd.Parameters.AddWithValue("@jp_name", set[1]);
-                            cmd.Parameters.AddWithValue("@type", set[2]);
-
-                            cmd.ExecuteNonQuery();
+                        case "ブースターパック":
+                            set[2] = "BP";
+                            break;
+                        case "エクストラパック":
+                            set[2] = "EP";
+                            break;
+                        case "トライアルデッキ":
+                            set[2] = "TD";
+                            break;
+                        case "PRカード":
+                            set[2] = "PR";
+                            break;
+                        case "エクストラパック／エクストラブースター/他":
+                            set[2] = "OT";
+                            break;
+                        default:
+                            log("Unknown set identifier: " + set[2] + " please enter value");
+                            set[2] = Console.ReadLine().Trim();
+                            break;
                     }
+                    log("Inserting set " + set[1] + "into database with id " + set[0] + " and type " + set[2]);
+
+                    MySqlCommand cmd = new MySqlCommand();
+                    cmd.Connection = conn;
+
+                    cmd.CommandText = "INSERT INTO ws_sets(id,jp_name,type) VALUES(@id,@jp_name,@type)";
+                    cmd.Prepare();
+
+                    cmd.Parameters.AddWithValue("@id", set[0]);
+                    cmd.Parameters.AddWithValue("@jp_name", set[1]);
+                    cmd.Parameters.AddWithValue("@type", set[2]);
+
+                    cmd.ExecuteNonQuery();
                 }
 
             }
@@ -210,7 +207,7 @@ namespace WSDBBuilder
                     List<string[]> sets = new List<string[]>();
                     getSets(ref sets, setIds);
                     processSets(setIds, sets, conn);
-                    
+
                 }
 
                 int index = 0;
