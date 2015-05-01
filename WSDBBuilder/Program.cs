@@ -24,7 +24,6 @@ namespace WSDBBuilder
             consolelog.WriteLine(message);
             Console.WriteLine(message);
         }
-
         static void pause()
         {
             Console.Write("Press any key to continue . . .");
@@ -48,7 +47,6 @@ namespace WSDBBuilder
             log("Retrieved " + ids.Count + " set id");
             return true;
         }
-
         static void getSets(ref List<string[]> sets, List<short> ids)
         {
             int index = 0;
@@ -73,7 +71,6 @@ namespace WSDBBuilder
 
             }
         }
-
         static bool requestPage(string uri, ref string result)
         {
             try
@@ -89,7 +86,6 @@ namespace WSDBBuilder
             }
             return false;
         }
-
         static bool postRequest(List<KeyValuePair<string, string>> pairs, string location, ref string result, bool en = false)
         {
             using (var client = new HttpClient())
@@ -110,7 +106,6 @@ namespace WSDBBuilder
             }
             return true;
         }
-
         static bool prompt(string message)
         {
             log(message + " y/n");
@@ -128,7 +123,6 @@ namespace WSDBBuilder
             else
                 return false;
         }
-
         static void processSets(List<short> setIds, List<string[]> sets, MySqlConnection conn)
         {
             try
@@ -178,7 +172,6 @@ namespace WSDBBuilder
                 log("Error: " + e.ToString());
             }
         }
-
         static void importLibrary(List<short> setIds, MySqlConnection conn, bool en = false)
         {
 
@@ -332,22 +325,18 @@ namespace WSDBBuilder
 
             }
         }
-
         static void exit(int code, MySqlConnection conn = null)
         {
             if (conn != null)
                 conn.Close();
             Environment.Exit(code);
         }
-
-
         static void Main(string[] args)
         {
             MySqlConnection conn = null;
             consolelog.AutoFlush = true;
             List<short> setIds = new List<short>();
             string cs = @"server=localhost;userid=root;password=;database=ws_db;charset=utf8;";
-
             try
             {
                 conn = new MySqlConnection(cs);
