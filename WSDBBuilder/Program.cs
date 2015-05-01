@@ -5,12 +5,14 @@ using System.Net.Http;
 using System.Linq;
 using System.Text;
 using System.Diagnostics;
+using System.Collections;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using AngleSharp.Dom;
 using AngleSharp.Dom.Html;
 using AngleSharp.Parser.Html;
 using MySql.Data.MySqlClient;
+using Conversive.PHPSerializationLibrary;
 
 namespace WSDBBuilder
 {
@@ -127,91 +129,92 @@ namespace WSDBBuilder
                 return false;
         }
 
+        static void processSets(List<short> setIds, List<string[]> sets, MySqlConnection conn)
+        {
+            try
+            {
+                if (conn != null)
+                {
+                    foreach (string[] set in sets)
+                    {
+                        switch (set[2])
+                        {
+                            case "ブースターパック":
+                                set[2] = "BP";
+                                break;
+                            case "エクストラパック":
+                                set[2] = "EP";
+                                break;
+                            case "トライアルデッキ":
+                                set[2] = "TD";
+                                break;
+                            case "PRカード":
+                                set[2] = "PR";
+                                break;
+                            case "エクストラパック／エクストラブースター/他":
+                                set[2] = "OT";
+                                break;
+                            default:
+                                log("Unknown set identifier: " + set[2] + " please enter value");
+                                set[2] = Console.ReadLine().Trim();
+                                break;
+                        }
+                            log("Inserting set " + set[1] + "into database with id " + set[0] + " and type " + set[2]);
+
+                            MySqlCommand cmd = new MySqlCommand();
+                            cmd.Connection = conn;
+
+                            cmd.CommandText = "INSERT INTO ws_sets(id,jp_name,type) VALUES(@id,@jp_name,@type)";
+                            cmd.Prepare();
+
+                            cmd.Parameters.AddWithValue("@id", set[0]);
+                            cmd.Parameters.AddWithValue("@jp_name", set[1]);
+                            cmd.Parameters.AddWithValue("@type", set[2]);
+
+                            cmd.ExecuteNonQuery();
+                    }
+                }
+
+            }
+            catch (MySqlException e)
+            {
+                log("Error: " + e.ToString());
+            }
+        }
+
 
         static void Main(string[] args)
         {
             MySqlConnection conn = null;
             consolelog.AutoFlush = true;
             List<short> setIds = new List<short>();
-            List<string[]> sets = new List<string[]>();
             string cs = @"server=localhost;userid=root;password=;database=ws_db;charset=utf8;";
-            bool db = false;
 
             try
             {
                 conn = new MySqlConnection(cs);
                 conn.Open();
-                db = true;
             }
             catch (MySqlException e)
             {
 
                 log(e.ToString());
-                if (!prompt("Unable to connect to the database, continue?"))
-                    Environment.Exit(0);
+                log("Database connection failed!");
+                pause();
+                Environment.Exit(1);
             }
             if (getId(ref setIds))
             {
-                bool processSets = prompt("Get set data?");
-                if (processSets)
+                if (prompt("Get set data?"))
                 {
+                    List<string[]> sets = new List<string[]>();
                     getSets(ref sets, setIds);
-                    try
-                    {
-                        if (db)
-                        {
-                            foreach (string[] set in sets)
-                            {
-                                switch (set[2])
-                                {
-                                    case "ブースターパック":
-                                        set[2] = "bp";
-                                        break;
-                                    case "エクストラパック":
-                                        set[2] = "ep";
-                                        break;
-                                    case "トライアルデッキ":
-                                        set[2] = "td";
-                                        break;
-                                    case "PRカード":
-                                        set[2] = "pr";
-                                        break;
-                                    case "エクストラパック／エクストラブースター/他":
-                                        set[2] = "ot";
-                                        break;
-                                    default:
-                                        log("Unknown set identifier: " + set[2] + " please enter value");
-                                        set[2] = Console.ReadLine();
-                                        break;
-                                }
-                                if (db)
-                                {
-                                    log("Inserting set " + set[1] + "into database with id " + set[0] + " and type " + set[2]);
-
-                                    MySqlCommand cmd = new MySqlCommand();
-                                    cmd.Connection = conn;
-
-                                    cmd.CommandText = "INSERT INTO ws_sets(id,jp_name,type) VALUES(@id,@jp_name,@type)";
-                                    cmd.Prepare();
-
-                                    cmd.Parameters.AddWithValue("@id", set[0]);
-                                    cmd.Parameters.AddWithValue("@jp_name", set[1]);
-                                    cmd.Parameters.AddWithValue("@type", set[2]);
-
-                                    cmd.ExecuteNonQuery();
-                                }
-                            }
-                        }
-
-                    }
-                    catch (MySqlException e)
-                    {
-                        log("Error: " + e.ToString());
-                    }
+                    processSets(setIds, sets, conn);
+                    
                 }
 
                 int index = 0;
-                while (index < 1)//ids.Count)
+                while (index < setIds.Count)
                 {
                     var pairs = new List<KeyValuePair<string, string>>();
                     pairs.Add(new KeyValuePair<string, string>("expansion_id", setIds[index].ToString()));
@@ -220,7 +223,7 @@ namespace WSDBBuilder
                     //this is a mess and rather redudant
                     if (postRequest(pairs, "/jsp/cardlist/expansionDetail", ref result))
                     {
-
+                        Serializer serializer = new Serializer();
                         IHtmlDocument page = new HtmlParser(result).Parse();
                         //get the string that has the total number of cards
                         string noCardsText = page.DocumentElement.QuerySelector("p.pageLink").FirstChild.TextContent.Trim();
@@ -233,34 +236,115 @@ namespace WSDBBuilder
                         //store all the ids in a list
                         List<string> cardSetIds = new List<string>();
                         foreach (IElement m in matches)
-                            cardSetIds.Add(m.TextContent);
+                            if (!String.IsNullOrWhiteSpace(m.TextContent))
+                                cardSetIds.Add(m.TextContent.Trim());
 
-                        /*for (int i = 2; i <= nopages; i++)
+                        for (int i = 2; i <= nopages; i++)
                         {
                             pairs = new List<KeyValuePair<string, string>>();
                             pairs.Add(new KeyValuePair<string, string>("expansion_id", setIds[index].ToString()));
                             pairs.Add(new KeyValuePair<string, string>("page", i.ToString()));
                             if (postRequest(pairs, "/jsp/cardlist/expansionDetail", ref result))
                             {
-                                page.LoadHtml2(result);
+                                page = new HtmlParser(result).Parse();
                                 matches = page.DocumentElement.QuerySelectorAll("tr td:first-child");
                                 foreach (IElement m in matches)
-                                    cardSetIds.Add(m.TextContent);
+                                    if (!String.IsNullOrWhiteSpace(m.TextContent))
+                                        cardSetIds.Add(m.TextContent.Trim());
                             }
                             else
                                 if (prompt("Retry?"))
                                     i--;
-                        }*/
+                        }
                         foreach (string id in cardSetIds)
                         {
-                            requestPage("http://ws-tcg.com/cardlist/?cardno=" + "FS/S34-032", ref result);
+                            requestPage("http://ws-tcg.com/cardlist/?cardno=" + id, ref result);
                             page = new HtmlParser(result).Parse();
                             string image = page.DocumentElement.QuerySelector(".status td img").Attributes.First(attr => attr.Name == "src").Value;
                             matches = page.DocumentElement.QuerySelectorAll(".status td");
+                            MatchCollection rmatches;
                             List<IElement> tableNodes = matches.ToList<IElement>();
-                            string name = tableNodes[1].FirstChild.TextContent;
-                            string kana = tableNodes[1].ChildNodes.First(node => node.NodeName == "SPAN").TextContent.Trim();
-                            break;
+                            Dictionary<string, string> card = new Dictionary<string, string>();
+                            card.Add("name", tableNodes[1].FirstChild.TextContent.Trim());
+                            card.Add("kana", tableNodes[1].ChildNodes.First(node => node.NodeName == "SPAN").TextContent.Trim());
+                            //tableNodes[2] == id
+                            card.Add("rarity", tableNodes[3].TextContent.Trim());
+                            card.Add("set", setIds[index].ToString()); //tableNodes[4] holds the expansion but it's best to store the id instead
+                            card.Add("side", Regex.Match(tableNodes[5].InnerHtml.Trim(), "src=['\"](?:.+\\/)+(\\w)").Groups[1].Value.ToUpper());
+                            switch (tableNodes[6].TextContent.Trim())
+                            {
+                                case "クライマックス":
+                                    card.Add("type", "CX");
+                                    break;
+                                case "イベント":
+                                    card.Add("type", "EV");
+                                    break;
+                                case "キャラ":
+                                    card.Add("type", "CH");
+                                    break;
+                                default:
+                                    log("Unknown card type: " + tableNodes[6].TextContent.Trim() + " please enter a value");
+                                    card.Add("type", Console.ReadLine().Trim());
+                                    break;
+                            }
+                            card.Add("color", Regex.Match(tableNodes[7].InnerHtml.Trim(), "src=['\"](?:.+\\/)+(\\w)").Groups[1].Value.ToUpper());
+                            card.Add("level", Regex.IsMatch(tableNodes[8].TextContent.Trim(), "[-－]") ? null : tableNodes[8].TextContent.Trim());
+                            card.Add("cost", Regex.IsMatch(tableNodes[9].TextContent.Trim(), "[-－]") ? null : tableNodes[9].TextContent.Trim());
+                            card.Add("power", Regex.IsMatch(tableNodes[10].TextContent.Trim(), "[-－]") ? null : tableNodes[10].TextContent.Trim());
+                            card.Add("soul", Regex.Matches(tableNodes[11].InnerHtml.Trim(), "src=['\"](?:.+?\\/)+?(\\w+)?\\.").Count.ToString());
+                            ArrayList triggers = new ArrayList();
+                            rmatches = Regex.Matches(tableNodes[12].InnerHtml, "src=['\"](?:.+?\\/)+?(\\w+)?\\.");
+                            foreach (Match m in rmatches)
+                                triggers.Add(m.Groups[1].Value);
+                            card.Add("triggers", triggers.Count == 0 ? null : serializer.Serialize(triggers));
+                            ArrayList traits = new ArrayList();
+                            if (tableNodes[13].TextContent.Trim().Contains('・'))
+                            {
+                                string[] s = tableNodes[13].TextContent.Split('・');
+                                foreach (string item in s)
+                                {
+                                    if (!Regex.IsMatch(item.Trim(), "[-－]"))
+                                        traits.Add(item.Trim());
+                                }
+                            }
+                            card.Add("traits", traits.Count == 0 ? null : serializer.Serialize(traits));
+
+                            if (!Regex.IsMatch(tableNodes[14].TextContent.Trim(), "(?:（バニラ）|[-－])"))
+                                card.Add("text", Regex.Replace(tableNodes[14].InnerHtml.Trim(), "<br\\s*(?:\\/)*>$", "", RegexOptions.None));
+                            else
+                                card.Add("text", null);
+
+                            if (!Regex.IsMatch(tableNodes[14].TextContent.Trim(), "[-－]"))
+                                card.Add("flavor", Regex.Replace(tableNodes[15].InnerHtml.Trim(), "<br\\s*(?:\\/)*>$", "", RegexOptions.None));
+                            else
+                                card.Add("flavor", null);
+
+                            log("Adding " + id + " to the database.");
+                            MySqlCommand cmd = new MySqlCommand();
+                            cmd.Connection = conn;
+
+                            cmd.CommandText = "INSERT INTO " +
+                                "ws_cards(cardno,name,kana,rarity,expansion,side,color,level,cost,power,soul,triggers,traits,text,flavor) " +
+                                "VALUES(@cardno,@name,@kana,@rarity,@expansion,@side,@color,@level,@cost,@power,@soul,@triggers,@traits,@text,@flavor)";
+                            cmd.Prepare();
+
+                            cmd.Parameters.AddWithValue("@cardno", id);
+                            cmd.Parameters.AddWithValue("@name", card["name"]);
+                            cmd.Parameters.AddWithValue("@kana", card["kana"]);
+                            cmd.Parameters.AddWithValue("@rarity", card["rarity"]);
+                            cmd.Parameters.AddWithValue("@expansion", setIds[index]);
+                            cmd.Parameters.AddWithValue("@side", card["side"]);
+                            cmd.Parameters.AddWithValue("@color", card["color"]);
+                            cmd.Parameters.AddWithValue("@level", card["level"]);
+                            cmd.Parameters.AddWithValue("@cost", card["cost"]);
+                            cmd.Parameters.AddWithValue("@power", card["power"]);
+                            cmd.Parameters.AddWithValue("@soul", card["soul"]);
+                            cmd.Parameters.AddWithValue("@triggers", card["triggers"]);
+                            cmd.Parameters.AddWithValue("@traits", card["traits"]);
+                            cmd.Parameters.AddWithValue("@text", card["text"]);
+                            cmd.Parameters.AddWithValue("@flavor", card["flavor"]);
+
+                            cmd.ExecuteNonQuery();
                         }
                         index++;
                     }
