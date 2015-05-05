@@ -212,12 +212,21 @@ namespace WSDBBuilder
             //calculate the number of pages
             return (int)Math.Ceiling((Convert.ToDouble(nocards.Groups[1].Value) / 10));
         }
-        static void DownloadCardImage(string url, string filename, bool en = false)
+        static bool DownloadCardImage(string url, string filename, bool en = false)
         {
             Log("Saving "+filename);
             Directory.CreateDirectory(Directory.GetCurrentDirectory() + @"\cardimages");
             var wclient = new WebClient();
-            wclient.DownloadFile("http://ws-tcg.com/" + (en ? "en/" : "") + "cardlist/cardimages/" + filename, Directory.GetCurrentDirectory() + @"\cardimages\" + filename);
+            try
+            {
+                wclient.DownloadFile("http://ws-tcg.com/" + (en ? "en/" : "") + "cardlist/cardimages/" + filename, Directory.GetCurrentDirectory() + @"\cardimages\" + filename);
+                return true;
+            }
+            catch(WebException e)
+            {
+                Log("Failed download " + filename);
+                return false;
+            }
         }
         static IEnumerable<string> GetCardIds(int setId, int nopages, bool en = false)
         {
@@ -246,6 +255,7 @@ namespace WSDBBuilder
         {
             var index = 0;
             var serializer = new Serializer();
+            var failedDownloads = new List<string>();
             while (index < setIds.Count)
             {
                 Log("Processing set " + setIds[index]);
@@ -259,7 +269,10 @@ namespace WSDBBuilder
                     var page = new HtmlParser(result).Parse();
                     var image = page.DocumentElement.QuerySelector(".status td img").Attributes.First(attr => attr.Name == "src").Value;
                     var filename = Regex.Match(image, @".*\/+(.+\.\w+)").Groups[1].Value;
-                    DownloadCardImage("http://ws-tcg.com/"+(en ? "en/" : "")+"cardlist/cardimages/"+filename, filename, en);
+                    if (
+                        !DownloadCardImage(
+                            "http://ws-tcg.com/" + (en ? "en/" : "") + "cardlist/cardimages/" + filename, filename, en))
+                        failedDownloads.Add(id);
                     var matches = page.DocumentElement.QuerySelectorAll(".status td");
                     var tableNodes = matches.ToList();
                     var card = new Dictionary<string, string>();
@@ -373,6 +386,9 @@ namespace WSDBBuilder
                 index++;
 
             }
+            Log("Failed Downloads:");
+            foreach (var dl in failedDownloads)
+                Log(dl);
         }
         static void Main()
         {
